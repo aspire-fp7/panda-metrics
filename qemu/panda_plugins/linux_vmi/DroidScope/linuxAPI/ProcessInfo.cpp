@@ -588,7 +588,7 @@ DECAF_errno_t ProcessInfoMap::addModule(gpid_t pid, gva_t  startAddr, gva_t  end
   return (-1);
 }
 
-int ProcessInfoMap::updateModule(gpid_t pid, gva_t  startAddr, gva_t  endAddr, target_ulong flags, const char* strName)
+int ProcessInfoMap::updateModule(gpid_t pid, gva_t  startAddr, gva_t  endAddr, target_ulong flags, const char* strName, gva_t vm_pgoff)
 {
   int ret = 0;
 
@@ -596,6 +596,11 @@ int ProcessInfoMap::updateModule(gpid_t pid, gva_t  startAddr, gva_t  endAddr, t
   if (pInfo == NULL)
   {
     return (NULL_POINTER_ERROR);
+  }
+
+  if (startAddr == -1) {
+    pInfo->modules = NULL;
+    return -1;
   }
 
   ModuleNode* pNode = NULL;
@@ -622,6 +627,7 @@ int ProcessInfoMap::updateModule(gpid_t pid, gva_t  startAddr, gva_t  endAddr, t
     pNode->next = pInfo->modules;
     pNode->moduleInfo = modServer.getModulePointer(strName);
     pInfo->modules = pNode;
+    pNode->vm_pgoff = vm_pgoff;
     //we are done return 4 1's - the number of fields changed
     return (0xF);
   }
@@ -685,6 +691,7 @@ int ProcessInfoMap::updateModule(gpid_t pid, gva_t  startAddr, gva_t  endAddr, t
       pNode->flags = flags;
       pNode->next = pi->next;
       pNode->moduleInfo = modServer.getModulePointer(strName);
+      pNode->vm_pgoff = vm_pgoff;
       pi->next = pNode;
       //we are done
       return (0xF);
@@ -751,7 +758,7 @@ int ProcessInfoMap::getModuleName(ProcessInfo* pInfo, char* str, size_t len, gva
   return (ProcessInfoMap::getModuleInfo(pInfo, str, len, &startAddr, &endAddr, addr));
 }
 
-int ProcessInfoMap::getModuleInfo(ProcessInfo* pInfo, char* str, size_t len, gva_t * pStartAddr, gva_t * pEndAddr, gva_t  addr)
+int ProcessInfoMap::getModuleInfo(ProcessInfo* pInfo, char* str, size_t len, gva_t * pStartAddr, gva_t * pEndAddr, gva_t  addr, gva_t* p_vm_pgoff, target_ulong* flags)
 {
   if ( (pInfo == NULL) || (str == NULL) || (pStartAddr == NULL) || (pEndAddr == NULL) )
   {
@@ -779,6 +786,11 @@ int ProcessInfoMap::getModuleInfo(ProcessInfo* pInfo, char* str, size_t len, gva
   *pStartAddr = i->startAddr;
   *pEndAddr = i->endAddr;
 
+  if (p_vm_pgoff)
+    *p_vm_pgoff = i->vm_pgoff;
+  if (flags)
+    *flags = i->flags;
+
   //if we are here then we found the right mod info, so lets just get the symbol and be done with it
   return (0);
 }
@@ -795,7 +807,7 @@ int ProcessInfoMap::getModuleName(gpid_t pid, char* str, size_t len, gva_t  addr
   return (ProcessInfoMap::getModuleName(pInfo, str, len, addr));
 }
 
-int ProcessInfoMap::getModuleInfo(gpid_t pid, char* str, size_t len, gva_t * pStartAddr, gva_t * pEndAddr, gva_t  addr)
+int ProcessInfoMap::getModuleInfo(gpid_t pid, char* str, size_t len, gva_t * pStartAddr, gva_t * pEndAddr, gva_t  addr, gva_t* p_vm_pgoff, target_ulong* flags)
 {
   if ( (str == NULL) || (pStartAddr == NULL) || (pEndAddr == NULL) )
   {
@@ -803,7 +815,7 @@ int ProcessInfoMap::getModuleInfo(gpid_t pid, char* str, size_t len, gva_t * pSt
   }
 
   ProcessInfo* pInfo = findProcessByPID(pid);
-  return (ProcessInfoMap::getModuleInfo(pInfo, str, len, pStartAddr, pEndAddr, addr));
+  return (ProcessInfoMap::getModuleInfo(pInfo, str, len, pStartAddr, pEndAddr, addr, p_vm_pgoff, flags));
 }
 
 int ProcessInfoMap::getModuleInfoByName(gpid_t pid, gva_t * pStartAddr, gva_t * pEndAddr, const char* strName)
@@ -1217,9 +1229,9 @@ int addModule(gpid_t pid, gva_t  startAddr, gva_t  endAddr, target_ulong flags, 
   return (processInfoMap.addModule(pid, startAddr, endAddr, flags, strName));
 }
 
-int updateModule(gpid_t pid, gva_t  startAddr, gva_t  endAddr, target_ulong flags, const char* strName)
+int updateModule(gpid_t pid, gva_t  startAddr, gva_t  endAddr, target_ulong flags, const char* strName, gva_t vm_pgoff)
 {
-  return (processInfoMap.updateModule(pid, startAddr, endAddr, flags, strName));
+  return (processInfoMap.updateModule(pid, startAddr, endAddr, flags, strName, vm_pgoff));
 }
 
 int removeModuleByName(gpid_t pid, const char* strName)
@@ -1234,7 +1246,12 @@ int getModuleName(gpid_t pid, char* str, size_t len, gva_t  addr)
 
 int getModuleInfo(gpid_t pid, char* str, size_t len, gva_t * pStartAddr, gva_t * pEndAddr, gva_t  addr)
 {
-  return (processInfoMap.getModuleInfo(pid, str, len, pStartAddr, pEndAddr, addr));
+  return (processInfoMap.getModuleInfo(pid, str, len, pStartAddr, pEndAddr, addr, NULL, NULL));
+}
+
+int getModuleInfoEx(gpid_t pid, char* str, size_t len, gva_t * pStartAddr, gva_t * pEndAddr, gva_t  addr, gva_t* p_vm_pgoff, target_ulong* flags)
+{
+  return (processInfoMap.getModuleInfo(pid, str, len, pStartAddr, pEndAddr, addr, p_vm_pgoff, flags));
 }
 
 void printModuleList(FILE* fp, gpid_t pid)

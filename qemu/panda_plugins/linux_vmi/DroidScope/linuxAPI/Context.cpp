@@ -1,7 +1,8 @@
 /**
  * Copyright (C) <2011> <Syracuse System Security (Sycure) Lab>
+ * Copyright (C) 2016 Ghent University
  *
- * This library is free software; you can redistribute it and/or 
+ * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
  * version 2 of the License, or (at your option) any later version.
@@ -43,10 +44,22 @@
  *      Author: lok
  */
 
+#include <functional>
+#include <utility>
+#include <map>
+#include <sys/mman.h> /* TODO: does ARM differ? */
 #include "DroidScope/LinuxAPI.h"
 #include "DroidScope/linuxAPI/ProcessInfo.h"
 #include "utils/OutputWrapper.h"
 #include "panda_plugin.h"
+extern "C" {
+#include "rr_log.h"
+#include "rr_log_all.h"
+}
+
+#include "Context.h"
+
+FILE* trace_pc = NULL;
 
 gpid_t curProcessPID = (-1);
 static target_asid_t curProcessPGD = 0;
@@ -78,6 +91,8 @@ void updateProcessModuleList(CPUState* env, gpid_t pid)
     return;
   }
 
+  updateModule(pid, -1, 0, 0, NULL, -1);
+
   task = DECAF_get_current_process(env);
   i = task;
   do
@@ -107,7 +122,8 @@ void updateProcessModuleList(CPUState* env, gpid_t pid)
   target_ulong brk = 0;
   target_ulong startstack = 0;
   target_ulong mm = 0;
-  //printf("looking at the mmap at 0x%X\n", mmap_first);
+  target_ulong vm_pgoff = -1;
+  //if (pid == 1004) printf("looking at the mmap at 0x%X\n", mmap_first);
   do
   {
     vmstart = DECAF_get_vm_start(env, mmap_i);
@@ -125,12 +141,16 @@ void updateProcessModuleList(CPUState* env, gpid_t pid)
     //#define VM_SHARED       0x00000008
 
     vmfile = DECAF_get_vm_file(env, mmap_i);
-    //printf("looking at vmfile at 0x%X\n", vmfile);
+    //if (pid == 1004) printf("looking at vmfile at 0x%X\n", vmfile);
+    //if (pid == 1004) printf(" ranging from 0x%X to 0x%X\n", vmstart, vmend);
     if (vmfile != 0)
     {
       //get_mod_dname(mmap_i, name, 128);
       DECAF_get_mod_full_dname(env, mmap_i, name, 128);
-      //printf("found dname %s\n", name);
+
+      /* Only valid when there is a file. This is in PAGE_SIZE units (4K) */
+      vm_pgoff = DECAF_get_vm_pgoff(env, mmap_i) * 4 * 1024;
+      //if (pid == 1004) printf("found dname %s @ offset 0x%X\n", name, vm_pgoff);
     }
     else
     {
@@ -148,11 +168,11 @@ void updateProcessModuleList(CPUState* env, gpid_t pid)
           sprintf(name, "[stack]");
         }
       } else {
-       //printf("found iname %s\n", name);   
+       //if (pid == 1004) printf("found iname %s\n", name);   
       }
     }
 
-    int ret = updateModule(pid, vmstart, vmend, flags, name);
+    updateModule(pid, vmstart, vmend, flags, name, vm_pgoff);
     mmap_i = DECAF_get_next_mmap(env, mmap_i);
   } while ((mmap_i != 0) && (mmap_i != mmap_first));
 
@@ -266,8 +286,6 @@ gva_t updateProcessListByTask(CPUState* env, gva_t task, int updateMask, int bNe
   parentPid = DECAF_get_parent_pid(env, i);
   pgd = pgd_strip(DECAF_get_pgd(env, i));
 
-  int ret = 0;
-
   //if (curProcessPGD == pgd)
   {
     if (DECAF_get_arg_name(env, i, argName, MAX_PROCESS_INFO_NAME_LEN) < 0)
@@ -293,7 +311,7 @@ gva_t updateProcessListByTask(CPUState* env, gva_t task, int updateMask, int bNe
   }
   else
   {
-    ret = updateProcess(i, pid, parentPid, tgid, glpid, uid, gid, euid, egid, pgd, (argName[0] == '\0') ? NULL : argName, (name[0] == '\0') ? NULL : name);
+    updateProcess(i, pid, parentPid, tgid, glpid, uid, gid, euid, egid, pgd, (argName[0] == '\0') ? NULL : argName, (name[0] == '\0') ? NULL : name);
   }
 
   if (updateMask & UPDATE_THREADS)
@@ -414,7 +432,7 @@ inline void linux_pt(Monitor* mon)
 
 #if (1)
 //reg 0 is c2_base0 and 1 is c2_base1
-void Context_PGDWriteCallback(CPUState *env, target_ulong oldval, target_ulong newval)
+int Context_PGDWriteCallback(CPUState *env, target_ulong oldval, target_ulong newval)
 {
   //struct timeval t;
   //gettimeofday(&t, NULL);
@@ -425,12 +443,22 @@ void Context_PGDWriteCallback(CPUState *env, target_ulong oldval, target_ulong n
   // skipupdates flag that is set when system calls are made as well
   if (!bSkipNextPGDUpdate)
   {
-    updateProcessList(env, newval, UPDATE_PROCESSES | UPDATE_THREADS);
+    updateProcessList(env, newval, UPDATE_PROCESSES | UPDATE_THREADS | UPDATE_MODULES /* TODO: we might only update the modules when switching to a program of our interest */);
         //printf("%s is at [%x]\n", "fputs", getSymbolAddress(1, "/init", "free"));
   }
 
   //reset this flag
   bSkipNextPGDUpdate = 0;
+
+  ProcessInfo* info = findProcessByPID(curProcessPID);
+#if 0
+  fprintf(stderr, "Task is now pid %i [%s] [%s]\n", (int)curProcessPID,
+	  !info ? "[null info]" : !info->strName ? "[null str]" : info->strName,
+	  !info ? "[null info]" : !info->strComm ? "[null str]" : info->strComm
+ 	);
+#endif
+
+  return 0;
 }
 
 static gva_t Context_retAddr = 0;
@@ -453,7 +481,7 @@ int contextBBCallback(CPUState* env, TranslationBlock* tb)
   
   if (NULL == tb)
   {
-    return;
+    return 0;
   }
 
   if ( (tb->pc == SET_TASK_COMM_ADDR) || (tb->pc == DO_PRCTL_ADDR) )//set_task_comm
@@ -528,7 +556,7 @@ int contextBBCallback(CPUState* env, TranslationBlock* tb)
    //DECAF_flushTranslationBlock_env(env, Context_retAddr);
   }
     
-  return;
+  return 0;
 }
 
 #endif
@@ -541,19 +569,331 @@ int contextBBCallback(CPUState* env, TranslationBlock* tb)
 
 static int return_from_exec(CPUState *env){
     updateProcessList(env, CURRENT_PGD(env), UPDATE_MODULES | UPDATE_PROCESSES | UPDATE_THREADS);
+    fprintf(stderr, "from_exec\n");
+    printProcessList(NULL);
     return 0;
 }
 
 static int return_from_fork(CPUState *env){
     updateProcessList(env, CURRENT_PGD(env), UPDATE_PROCESSES | UPDATE_THREADS);
+    fprintf(stderr, "from_fork\n");
+    printProcessList(NULL);
     return 0;
 }
 static int return_from_clone(CPUState *env){
     updateProcessList(env, CURRENT_PGD(env), UPDATE_PROCESSES | UPDATE_THREADS);
+    fprintf(stderr, "from_clone\n");
+    printProcessList(NULL);
     return 0;
 }
+
+bool bart_insn_translate(CPUState *env, target_ulong pc) {
+#if 0
+  ProcessInfo* info = findProcessByPID(curProcessPID);
+  if (!info || !info->strComm)
+    return false;
+
+  if (strcmp("challenge3", info->strComm) == 0 || strcmp("sh", info->strComm) == 0 || strcmp("demo", info->strComm) == 0)
+    return true;
+  return false;
+#endif
+  return true;
+}
+
+target_offset_t getFileOffset(target_addr_t pc) {
+  target_ulong startAddr, endAddr, vm_pgoff;
+  char modulename[255];
+  int res = getModuleInfoEx(curProcessPID, modulename, 255, &startAddr, &endAddr, pc, &vm_pgoff, NULL);
+  if (res != 0)
+    return -1;
+  return pc - startAddr + vm_pgoff;
+}
+
+static const char* programName = nullptr;
+
+target_offset_t offsetOfFirstInstruction = 0x0;
+
+/* TODO: cache ProcessInfo probably */
+bool shouldTrace(target_addr_t pc) {
+  if (pc >= (target_addr_t) 0xc0000000)
+    return false;
+
+  ProcessInfo* info = findProcessByPID(curProcessPID);
+  if (!info || !info->strComm)
+    return false;
+
+  if (!programName || (strcmp(programName, info->strComm) != 0))
+    return false;
+
+  gva_t startAddr, endAddr;
+  char modulename[255];
+  memset(modulename, 0, 255);
+
+  int res = getModuleInfo(curProcessPID, modulename, 255, &startAddr, &endAddr, pc);
+  if (res == 0 && ( strcmp("/lib/libc.so", modulename) == 0 || strcmp("/bin/linker", modulename) == 0 ) ){
+    return false;
+  }
+
+  return true;
+}
+
+target_offset_t gmrt_offset = -1;
+target_offset_t gmrt_size = 0;
+
+bool isInMobileBlock(CPUState *env, MobileCodeInfo & info, target_addr_t pc)
+{
+  if (gmrt_offset == -1)
+    return false;
+
+  gva_t startAddr, endAddr;
+  char modulename[255];
+  memset(modulename, 0, 255);
+  target_ulong flags;
+
+  if (getModuleInfoByName(curProcessPID, &startAddr, &endAddr, libraryName) != 0 /* dumb API returns 0 on success */) {
+    return false;
+  }
+
+  /* Currently, the GMRT is an array of the following:
+     {
+       t_address addr;          :: offset 0
+       t_address downloaded;    :: offset 4
+       pthread_mutex_t mutex;   :: offset 8
+       size_t len;              :: offset 12
+     } MobileEntry;             == size 16
+  */
+  static const target_offset_t GMRT_ENRTY_SIZE = 16;
+
+  target_addr_t gmrt = gmrt_offset + startAddr;
+
+  for (int idx = 0; idx < gmrt_size / GMRT_ENRTY_SIZE; idx++) {
+
+    uint32_t buf[GMRT_ENRTY_SIZE/4];
+    panda_virtual_memory_rw(env, gmrt + GMRT_ENRTY_SIZE * idx, (uint8_t*)buf, GMRT_ENRTY_SIZE, 0);
+
+    /* The -8 is because Bert lets the downloaded pointer point to the first actual instruction of the block itself, while in the entire mobile blob
+     * there are two instructions of 4 bytes each before it: a DATA instruction (this doesn't get executed so it doesn't matter in the start check),
+     * and a POP instruction (this can be executed). These show up in the list file. Furthermore, the length is relative to the start of the mobile blob  */
+    gva_t mapping_start = buf[0] - 8;
+
+    if (pc >= mapping_start && pc < mapping_start + buf[3]) {
+      info.blockId = idx;
+      info.offsetInBlock = pc - mapping_start;
+
+#if 0
+	fprintf(stderr, "Currently in '%s' @ " TARGET_FMT_lx "\n", modulename, pc);
+	fprintf(stderr, "GMRT[0].addr = 0x" TARGET_FMT_lx "\n", buf[0]);
+	fprintf(stderr, "GMRT[0].downloaded = 0x" TARGET_FMT_lx "\n", buf[1]);
+	fprintf(stderr, "GMRT[0].len = 0x" TARGET_FMT_lx "\n", buf[3]);
+#endif
+
+      return true;
+    }
+  }
+
+  return false;
+}
+
+ProtectedProgramLocation getLocationFor(CPUState *env, target_addr_t pc, bool isPLTValid) {
+  ProtectedProgramLocation location;
+
+  gva_t startAddr, endAddr;
+  char modulename[255];
+  memset(modulename, 0, 255);
+  target_ulong flags;
+  int res = getModuleInfoEx(curProcessPID, modulename, 255, &startAddr, &endAddr, pc, NULL, &flags);
+
+  if (strcmp(modulename, libraryName) != 0) {
+    /* We're not in the protected library, but we might be in mobile code of it */
+    if (isInMobileBlock(env, location.mobile, pc)) {
+      location.valid = true;
+      location.isMobile = true;
+    } else {
+      location.valid = false;
+    }
+  } else {
+    location.valid = true;
+    location.isMobile = false;
+    location.libraryOffset = getFileOffset(pc);
+
+    /* The PLT is located in the instructions before the first instruction in Diablo's list file */
+    if (location.libraryOffset <= offsetOfFirstInstruction && !isPLTValid) {
+      location.valid = false;
+    }
+  }
+
+  return location;
+}
+
+int exec_bart_callback(CPUState *env, target_ulong pc) {
+  /*if ((unsigned long)pc >= (unsigned long)0xc000000)
+    return 0;*/
+
+  // fprintf(trace_pc, TARGET_FMT_lx ":\n", pc);
+  if (!shouldTrace(pc))
+    return 0;
+
+  ProcessInfo* info = findProcessByPID(curProcessPID);
+
+  gva_t startAddr, endAddr, vm_pgoff;
+  char modulename[255];
+  memset(modulename, 0, 255);
+
+  int res = getModuleInfoEx(curProcessPID, modulename, 255, &startAddr, &endAddr, pc, &vm_pgoff, NULL);
+
+#if 0
+  fprintf(trace_pc, TARGET_FMT_lx " @ %s, offset in file = 0x" TARGET_FMT_lx "\n", pc, res == 0 ? modulename : "[none]",  pc - startAddr + vm_pgoff);
+
+  auto it = breakpoints.find(std::make_pair(pc, curProcessPID)); /* TODO: won't trigger return point of execve/fork?! */
+  if (it != breakpoints.end()) {
+    fprintf(trace_pc, "[%i] [%s] - ", (int)curProcessPID, !info ? "[null info]" : !info->strComm ? "[null str]" : info->strComm);
+    fprintf(trace_pc, TARGET_FMT_lx ": ... ", /*tb->pc - 4*/pc);
+    (*it).second(env, pc);
+    breakpoints.erase(it);
+    return 0;
+  }
+  if (is_syscall(env, /*tb->pc*/pc + 4)) {
+    fprintf(trace_pc, " ('%s' 0x" TARGET_FMT_lx " - 0x" TARGET_FMT_lx " = %i ", modulename, startAddr, endAddr);
+    dump_syscall(env, pc, info);
+  }
+#endif
+
+  fflush(trace_file);
+
+  return 0;
+}
+
+int backward_trace_len = 0;
+int forward_trace_len = 0;
+
+const char* libraryName = nullptr;
+
+FILE* trace_file = nullptr;
+FILE* reuse_file = nullptr;
+FILE* memory_file = nullptr;
+FILE* entropy_file = nullptr;
+
+int bart_init()
+{
+  /* Format is linux_vmi:opt1=<val1>,etc
+     trace_file=<file>
+     reuse_file=<file>
+     memory_file=<file>
+     gmrt_offset=<hexint>
+     gmrt_size=<hexint>
+     library_name=<file>
+     traced_program=<file>
+     trace_memory_reuse=<0|1> # default: 0
+     trace_memory_constness=<0|1> # default: 0
+     offset_of_first_instruction=<hexint>
+
+     Example: linux_vmi:gmrt_offset=0x3ac0b8,gmrt_size=0x10,traced_program=demo,library_name=/liblib.so,trace_memory_reuse=1,trace_memory_constness=1,offset_of_first_instruction=0x0,backward_trace_len=1,forward_trace_len=0
+     */
+
+    const char* filename_trace = "trace_pc";
+    const char* filename_reuse = "memory_reuse_distance";
+    const char* filename_memory = "memory_constness";
+    const char* filename_entropy = "trace_entropy";
+
+    int trace_memory_reuse = 0;
+    int trace_memory_constness = 0;
+    int trace_entropy = 1;
+
+    panda_arg_list *args = panda_get_args("linux_vmi");
+
+    if (args != NULL) {
+      for (int i = 0; i < args->nargs; i++) {
+	if (strcmp(args->list[i].key, "gmrt_offset") == 0) {
+	  gmrt_offset = strtol(args->list[i].value, NULL, 0);
+	} else if (strcmp(args->list[i].key, "gmrt_size") == 0) {
+	  gmrt_size = strtol(args->list[i].value, NULL, 0);
+	} else if (strcmp(args->list[i].key, "library_name") == 0) {
+	  libraryName = args->list[i].value;
+	} else if (strcmp(args->list[i].key, "traced_program") == 0) {
+	  programName = args->list[i].value;
+	} else if (strcmp(args->list[i].key, "reuse_file") == 0) {
+	  filename_reuse = args->list[i].value;
+	} else if (strcmp(args->list[i].key, "memory_file") == 0) {
+	  filename_reuse = args->list[i].value;
+	} else if (strcmp(args->list[i].key, "trace_file") == 0) {
+	  filename_trace = args->list[i].value;
+	} else if (strcmp(args->list[i].key, "trace_memory_constness") == 0) {
+	  trace_memory_constness = atoi(args->list[i].value);
+	} else if (strcmp(args->list[i].key, "trace_memory_reuse") == 0) {
+	  trace_memory_reuse = atoi(args->list[i].value);
+	} else if (strcmp(args->list[i].key, "offset_of_first_instruction") == 0) {
+	  offsetOfFirstInstruction = strtol(args->list[i].value, NULL, 0);
+	} else if (strcmp(args->list[i].key, "backward_trace_len") == 0) {
+	  backward_trace_len = atoi(args->list[i].value);
+	} else if (strcmp(args->list[i].key, "forward_trace_len") == 0) {
+	  forward_trace_len = atoi(args->list[i].value);
+	}
+      }
+    }
+
+    trace_file = fopen(filename_trace , "w");
+    reuse_file = fopen(filename_reuse, "w");
+    memory_file = fopen(filename_memory, "w");
+    entropy_file = fopen(filename_entropy, "w");
+
+    // Need this to get EIP with our callbacks
+    panda_enable_precise_pc();
+
+    // Enable memory logging
+    panda_enable_memcb();
+
+    panda_cb callback;
+
+    callback.insn_translate = bart_insn_translate;
+    panda_register_callback(NULL, PANDA_CB_INSN_TRANSLATE, callback);
+
+    callback.insn_exec = exec_bart_callback;
+    panda_register_callback(NULL, PANDA_CB_INSN_EXEC, callback);
+
+    if (trace_memory_constness) {
+      panda_cb callback_memory;
+
+      callback_memory.virt_mem_write = mem_write_callback_constness;
+      panda_register_callback(NULL, PANDA_CB_VIRT_MEM_WRITE, callback_memory);
+    }
+
+    if (trace_memory_reuse) {
+      panda_cb callback_memory;
+
+      callback_memory.virt_mem_write = mem_write_callback_reuse;
+      panda_register_callback(NULL, PANDA_CB_VIRT_MEM_WRITE, callback_memory);
+
+      callback_memory.virt_mem_read = mem_read_callback_reuse;
+      panda_register_callback(NULL, PANDA_CB_VIRT_MEM_READ, callback_memory);
+    }
+
+    if (trace_entropy) {
+      panda_cb callback_entropy;
+      callback_entropy.after_block_exec = after_block_exec_trace_entropy;
+      panda_register_callback(NULL, PANDA_CB_AFTER_BLOCK_EXEC, callback_entropy);
+
+      callback_entropy.before_block_exec = before_block_exec_trace_entropy;
+      panda_register_callback(NULL, PANDA_CB_BEFORE_BLOCK_EXEC, callback_entropy);
+    }
+
+    return 0;
+}
+
+void bart_close()
+{
+  dump_write_constness();
+  dump_write_reuse();
+  dump_write_entropy_trace();
+
+
+  fclose(trace_file);
+  fclose(memory_file);
+  fclose(reuse_file);
+  fclose(entropy_file);
+}
+
 #if (1)
-void context_init(void)
+extern "C" void context_init(void)
 {
 
   panda_cb callback;
@@ -565,9 +905,12 @@ void context_init(void)
   panda_register_callback(NULL, PANDA_CB_VMI_AFTER_CLONE, callback);
   callback.after_PGD_write = Context_PGDWriteCallback;
   panda_register_callback(NULL, PANDA_CB_VMI_PGD_CHANGED, callback);
+
+  bart_init();
 }
 
-void context_close(void)
+extern "C" void context_close(void)
 {
+  bart_close();
 }
 #endif

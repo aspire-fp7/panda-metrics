@@ -80,6 +80,7 @@ int size_of_task_struct_comm = 0;
 int vm_area_struct_vm_start_offset = 0;
 int vm_area_struct_vm_end_offset = 0;
 int vm_area_struct_vm_next_offset = 0;
+int vm_area_struct_vm_pgoff = 0;
 int vm_area_struct_vm_file_offset = 0;
 int vm_area_struct_vm_flags_offset = 0;
 int file_f_dentry_offset = 0;
@@ -575,6 +576,7 @@ int PANDROID_set_vars(void){
     vm_area_struct_vm_start_offset = 4;
     vm_area_struct_vm_end_offset = 8;
     vm_area_struct_vm_next_offset =  12;
+    vm_area_struct_vm_pgoff = 72 - 4; /* TODO BART from source deduced */
     vm_area_struct_vm_file_offset = 72;
     vm_area_struct_vm_flags_offset = 20;
     file_f_dentry_offset = -1;
@@ -616,6 +618,7 @@ int PANDROID_set_vars_jb4_2(void){  //"Android-x86 Gingerbread", /* entry name *
        vm_area_struct_vm_start_offset = 4; /* offset of vm_start in vma */
        vm_area_struct_vm_end_offset = 8; /* offset of vm_end in vma */
        vm_area_struct_vm_next_offset =  12; /* offset of vm_next in vma */
+       vm_area_struct_vm_pgoff = 72 - 4; /* TODO BART from source deduced */
        vm_area_struct_vm_file_offset = 72; /* offset of vm_file in vma */
        vm_area_struct_vm_flags_offset = 20; /* offset of vm_flags in vma */
        file_f_dentry_offset= 12; /* offset of dentry in file */

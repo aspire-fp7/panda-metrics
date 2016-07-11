@@ -184,6 +184,12 @@ IMPLEMENT_OFFSET_GETTER(gva_t, DECAF_get_vm_start, vma_addr, vm_area_struct_vm_s
 IMPLEMENT_OFFSET_GETTER(gva_t, DECAF_get_vm_end, vma_addr, vm_area_struct_vm_end_offset, 0)
 
 /**
+ * Takes in the address of vm_area_struct and returns the vm_end field - which is an address
+ * Returns 0 if unsuccessful
+ */
+IMPLEMENT_OFFSET_GETTER(gva_t, DECAF_get_vm_pgoff, vma_addr, vm_area_struct_vm_pgoff, 0);
+
+/**
  * Takes in the address of a dentry struct and returns the d_parent field - which is a pointer
  * Returns 0 if unsuccessful
  */

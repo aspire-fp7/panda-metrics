@@ -111,6 +111,7 @@ typedef struct _ModuleNode
   gva_t endAddr;
   gva_t flags;
   void* moduleInfo; //I used a void* on purpose so you can't access the module info directly
+  gva_t vm_pgoff;
   struct _ModuleNode* next;
 } ModuleNode;
 

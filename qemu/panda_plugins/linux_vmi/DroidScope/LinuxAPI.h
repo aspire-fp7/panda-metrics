@@ -45,6 +45,12 @@
 #define UPDATE_THREADS (1 << 1)
 #define UPDATE_MODULES (1 << 2)
 
+#ifdef __cplusplus
+
+extern "C" {
+#endif
+
+
 /**
  * Updates a process's module list
  * @param pid The process's PID
@@ -178,7 +184,7 @@ int addModule(gpid_t pid, gva_t startAddr, gva_t endAddr, target_ulong flags, co
 #define DS_MOD_ENDADDR_MASK (1 << 1)
 #define DS_MOD_FLAGS_MASK (1 << 2)
 #define DS_MOD_NAME_MASK (1 << 3)
-int updateModule(gpid_t pid, gva_t startAddr, gva_t endAddr, target_ulong flags, const char* strName);
+int updateModule(gpid_t pid, gva_t startAddr, gva_t endAddr, target_ulong flags, const char* strName, gva_t vm_pgoff);
 
 /**
  * Remove a module by its name.
@@ -308,6 +314,7 @@ int getModuleName(gpid_t pid, char* str, size_t len, gva_t addr);
  * @return
  */
 int getModuleInfo(gpid_t pid, char* str, size_t len, gva_t* pStartAddr, gva_t* pEndAddr, gva_t addr);
+int getModuleInfoEx(gpid_t pid, char* str, size_t len, gva_t* pStartAddr, gva_t* pEndAddr, gva_t addr, gva_t* p_vm_pgoff, target_ulong* flags);
 
 /**
  * Returns the module's information by first finding the module by its name
@@ -322,5 +329,10 @@ int getModuleInfoByName(gpid_t pid, gva_t* pStartAddr, gva_t* pEndAddr, const ch
 //I just used the include here because there is a macro for static inline function definitions inside the h file.
 // this is just a little cleaner that is all
 #include "DECAF_linux_vmi.h"
+
+#ifdef __cplusplus
+}
+#endif
+
 
 #endif /* LINUXAPI_H_ */

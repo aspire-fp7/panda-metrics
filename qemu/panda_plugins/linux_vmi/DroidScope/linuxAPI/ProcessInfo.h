@@ -79,10 +79,10 @@ public:
 
 
   int addModule(gpid_t pid, gva_t startAddr, gva_t endAddr, target_ulong flags, const char* strName);
-  int updateModule(gpid_t pid, gva_t startAddr, gva_t endAddr, target_ulong flags, const char* strName);
+  int updateModule(gpid_t pid, gva_t startAddr, gva_t endAddr, target_ulong flags, const char* strName, gva_t vm_pgoff);
   int removeModuleByName(gpid_t pid, const char* strName);
   int getModuleName(gpid_t pid, char* str, size_t len, gva_t addr);
-  int getModuleInfo(gpid_t pid, char* str, size_t len, gva_t* pStartAddr, gva_t* pEndAddr, gva_t addr);
+  int getModuleInfo(gpid_t pid, char* str, size_t len, gva_t* pStartAddr, gva_t* pEndAddr, gva_t addr, gva_t* p_vm_pgoff, target_ulong* flags);
   int getModuleInfoByName(gpid_t pid, gva_t* pStartAddr, gva_t* pEndAddr, const char* strName);
 
   int symbolExists(gpid_t pid, gva_t address);
@@ -95,7 +95,7 @@ public:
   // because the ProcessInfo itself could be destroyed
   static int symbolExists(ProcessInfo* pInfo, gva_t address);
   static int getModuleName(ProcessInfo* pInfo, char* str, size_t len, gva_t addr);
-  static int getModuleInfo(ProcessInfo* pInfo, char* str, size_t len, gva_t* pStartAddr, gva_t* pEndAddr, gva_t addr);
+  static int getModuleInfo(ProcessInfo* pInfo, char* str, size_t len, gva_t* pStartAddr, gva_t* pEndAddr, gva_t addr, gva_t* p_vm_pgoff = NULL, target_ulong* flags = NULL);
   int getModuleInfoByName(ProcessInfo* pInfo, gva_t* pStartAddr, gva_t* pEndAddr, const char* strName);
 
   static int getSymbol(ProcessInfo* pInfo, char* symbol, size_t len, gva_t address);
